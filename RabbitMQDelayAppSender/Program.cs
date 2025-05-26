@@ -7,7 +7,7 @@ using RabbitMQ.Client;
 using RabbitMQDelayApp.Shared;
 using System.Text;
 
-namespace RabbitMQDelayApp
+namespace RabbitMQDelayAppSender
 {
     internal class Program
     {
@@ -29,7 +29,7 @@ namespace RabbitMQDelayApp
 
             Console.CancelKeyPress += (s, e) =>
             {
-                Console.WriteLine("Canceling the RabbitMQDelayAppReciever on {0}", DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm"));
+                Console.WriteLine("Canceling the {0} on {1}", nameof(RabbitMQDelayAppSender), DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm"));
                 cts.Cancel();
                 e.Cancel = true;
             };
@@ -77,7 +77,7 @@ namespace RabbitMQDelayApp
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Failed to Process RabbitMQDelayAppReciever, Error: {ex}");
+                Console.WriteLine($"Failed to Process {0}, Error: {1}", nameof(RabbitMQDelayAppSender), ex.Message);
                 throw;
             }
         }
@@ -108,8 +108,8 @@ namespace RabbitMQDelayApp
                     _logger.LogInformation("Using RabbitMQ CloudAMQP Configuration for Failed Queue");
                 }
 
-                using var connection = factory.CreateConnection();
-                using var channel = connection.CreateModel();
+                using var connection = await factory.CreateConnectionAsync(cancellationToken);
+                using var channel = await connection.CreateChannelAsync(cancellationToken: cancellationToken);
 
                 //RabbitMQ FIFO Queue.A TTL should be set (24 hours).
                 Random random = new();
@@ -117,18 +117,18 @@ namespace RabbitMQDelayApp
                 Message = Message + " With Delay of " + secondValue + " Second(s)";
                 double dealyTimeInMiliSeconds = TimeSpan.FromSeconds(secondValue).TotalMilliseconds;
                 var args = new Dictionary<string, object> { { "x-delayed-type", "direct" } };
-                channel.ExchangeDeclare("AiTripDelayExchange", "x-delayed-message", true, false, args);
+                await channel.ExchangeDeclareAsync("AiTripDelayExchange", "x-delayed-message", true, false, args, cancellationToken: cancellationToken);
 
                 // ensure that the queue exists before we publish to it
-                channel.QueueDeclare(queue: _rabbitMQConfig.FailedQueueName, durable: true, exclusive: false, autoDelete: false, arguments: args);
+                await channel.QueueDeclareAsync(queue: _rabbitMQConfig.FailedQueueName, durable: true, exclusive: false, autoDelete: false, arguments: args, cancellationToken: cancellationToken);
 
                 var body = Encoding.UTF8.GetBytes(Message);
-
-                var properties = channel.CreateBasicProperties();
-                properties.Persistent = true;
-                properties.Headers = new Dictionary<string, object> { { "x-delay", dealyTimeInMiliSeconds } };
-
-                channel.BasicPublish(exchange: "AiTripDelayExchange", routingKey: string.Empty, basicProperties: properties, body: body);
+                var properties = new BasicProperties
+                {
+                    Persistent = true,
+                    Headers = new Dictionary<string, object?> { { "x-delay", dealyTimeInMiliSeconds } }
+                };
+                await channel.BasicPublishAsync(exchange: "AiTripDelayExchange", routingKey: string.Empty, mandatory: true, basicProperties: properties, body: body, cancellationToken: cancellationToken);
                 Console.WriteLine("Failed Queue Sent message: '{0}'", Message);
                 _logger.LogInformation("RabbitMQ Message Sent Successfully for FailedQueue: {FailedQueueName}", _rabbitMQConfig.FailedQueueName);
                 await Task.CompletedTask;
